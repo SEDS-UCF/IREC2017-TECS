@@ -1,6 +1,6 @@
 /**
  * incμssμs - Telemetry and Experiment Control System (TECS)
- * Main Flight Program - Revised 04/01/2017
+ * Main Flight Program - Revised 05/023/2017
  * © 2017 SEDS-UCF
  *
  * This work is licensed under the terms of the MIT license.
@@ -9,32 +9,49 @@
 
 #include <SFE_BMP180.h>
 #include <Wire.h>
+#include <Servo.h>
 #include <SD.h>
 
 #include "MPU9250.h"
 
-#define SERIAL_DEBUG /// Enables debugging to the serial console. ENSURE THIS IS COMMENTED OUT BEFORE FLIGHT. Seriously. See my rant in loop() for more info.
+//#define SERIAL_DEBUG /// Enables debugging to the serial console. ENSURE THIS IS COMMENTED OUT BEFORE FLIGHT. Seriously. See my rant in loop() for more info.
+#define BUZZER_DEBUG
 
-const float ACCEL_BIAS_X = 0.036;
-const float ACCEL_BIAS_Y = -0.006;
-const float ACCEL_BIAS_Z = 0.071;
-const float GYRO_BIAS_X = 1.15;
-const float GYRO_BIAS_Y = 0.52;
-const float GYRO_BIAS_Z = -0.18;
+const float ACCEL_BIAS_X_MAIN = 0.011;
+const float ACCEL_BIAS_Y_MAIN = 0.013;
+const float ACCEL_BIAS_Z_MAIN = -0.027;
+const float GYRO_BIAS_X_MAIN = 0.020;
+const float GYRO_BIAS_Y_MAIN = 1.269;
+const float GYRO_BIAS_Z_MAIN = -0.003;
 
-const float LIFTOFF_VERT_G_THRESHOLD = 1.5;
-const float EXPERIMENT_VERT_G_THRESHOLD = 0.3;
+const float ACCEL_BIAS_X_BACKUP = 0.038;
+const float ACCEL_BIAS_Y_BACKUP = 0.020;
+const float ACCEL_BIAS_Z_BACKUP = 0.013;
+const float GYRO_BIAS_X_BACKUP = 0.877;
+const float GYRO_BIAS_Y_BACKUP = 0.677;
+const float GYRO_BIAS_Z_BACKUP = -0.029;
+
+/*const float LIFTOFF_MAGNITUDE_THRESHOLD = 2.0;
+const float EXPERIMENT_MAGNITUDE_THRESHOLD = 0.1;*/
+
+const float LIFTOFF_POS_Z_THRESHOLD = 2.0;
+const float EXPERIMENT_POS_Z_THRESHOLD = 0.1;
 
 const uint8_t FILTER_SIZE = 0;
 
 const uint8_t FILE_FLUSH_THRESHOLD = 30;
 
-const uint8_t RELAY_ONE_PIN = 5;
-const uint8_t RELAY_TWO_PIN = 6;
+const uint8_t SRV1_PIN = 14;
+const uint8_t SRV2_PIN = 15;
 const uint8_t RPI_SIGNAL_PIN = 7;
 const uint8_t BUZZER_PIN = 9;
 const uint8_t CARD_DETECT_PIN = 8;
 const uint8_t CHIP_SELECT_PIN = 10;
+
+const uint8_t SRV1_START = 0;
+const uint8_t SRV1_STOP = 90;
+const uint8_t SRV2_START = 0;
+const uint8_t SRV2_STOP = 90;
 
 const float M_TO_FT = 3.28084;
 
@@ -63,6 +80,8 @@ const uint8_t WARN_BMP180_PRES_START_FAIL	= ERR_LAST + 3;
 const uint8_t WARN_BMP180_PRES_GET_FAIL		= ERR_LAST + 4;
 
 const char str_space = ' ';
+
+int16_t buzzer_timer = 0;
 
 struct BaroData {
 	float P; // barometer pressure
@@ -94,6 +113,9 @@ FilteredDataset filter_array[FILTER_SIZE];
 uint8_t filter_index = 0;
 
 bool flying = false;
+
+Servo srv1;
+Servo srv2;
 
 void warning(char warn) {
 	switch(warn) {
@@ -180,7 +202,9 @@ void error(char err) {
 		data_file.print(F("# ")); data_file.print((float)(millis() - start_time) / 1000.f, 3); data_file.print(F(" ERR: ")); data_file.println(err); data_file.flush();
 	}
 
+	#ifdef SERIAL_DEBUG
 	Serial.println(F("Program can NOT continue! Holding..."));
+	#endif // SERIAL_DEBUG
 	while(true) {
 		uint32_t loop_start = millis();
 		delay(10);
@@ -205,15 +229,37 @@ void error(char err) {
 }
 
 void deployExperiment() {
-	// pull pins LOW to activate the relays
-	digitalWrite(RELAY_ONE_PIN, LOW);
-	digitalWrite(RELAY_TWO_PIN, LOW);
+	srv1.write(SRV1_STOP);
+	srv2.write(SRV2_STOP);
+	
+	if (data_file) {
+		data_file.print(F("# ")); data_file.print((float)(millis() - start_time) / 1000.f, 3); data_file.println(F(" EXPERIMENT DEPLOYED!")); data_file.flush();
+	}
+	
+	#ifdef SERIAL_DEBUG
+	Serial.println("##### EXPERIMENT DEPLOYED #####");
+	#endif // SERIAL_DEBUG
+	#ifdef BUZZER_DEBUG
+	digitalWrite(BUZZER_PIN, HIGH);
+	buzzer_timer = 100;
+	#endif
 }
 
 void liftoff() {
 	flying = true;
 	digitalWrite(RPI_SIGNAL_PIN, HIGH);
-	Serial.println("##### RPi SIGNAL #####");
+	
+	if (data_file) {
+		data_file.print(F("# ")); data_file.print((float)(millis() - start_time) / 1000.f, 3); data_file.println(F(" LIFTOFF DETECTED!")); data_file.flush();
+	}
+	
+	#ifdef SERIAL_DEBUG
+	Serial.println("##### LIFTOFF DETECTED #####");
+	#endif // SERIAL_DEBUG
+	#ifdef BUZZER_DEBUG
+	digitalWrite(BUZZER_PIN, HIGH);
+	buzzer_timer = 100;
+	#endif
 }
 
 void setup() {
@@ -225,17 +271,18 @@ void setup() {
 	#endif // SERIAL_DEBUG
 
 	// setup relay pins
-	pinMode(RELAY_ONE_PIN, OUTPUT);
-	pinMode(RELAY_TWO_PIN, OUTPUT);
-
-	// relays are ACTIVE LOW, so drive them HIGH here to keep them off
-	digitalWrite(RELAY_ONE_PIN, HIGH);
-	digitalWrite(RELAY_TWO_PIN, HIGH);
+	pinMode(SRV1_PIN, OUTPUT);
+	pinMode(SRV2_PIN, OUTPUT);
 
 	pinMode(BUZZER_PIN, OUTPUT);
 
 	pinMode(CHIP_SELECT_PIN, OUTPUT);
 	pinMode(CARD_DETECT_PIN, INPUT_PULLUP);
+
+	srv1.attach(SRV1_PIN); // TODO: replace with constants
+	srv2.attach(SRV2_PIN);
+	srv1.write(SRV1_START);
+	srv2.write(SRV2_START);
 
 	if(!digitalRead(CARD_DETECT_PIN))
 		error(ERR_SD_NO_CARD);
@@ -256,7 +303,7 @@ void setup() {
 	Serial.print(num_files);
 	Serial.print(F(" files on card. Filename is \""));
 	Serial.print(filename);
-	Serial.print("\"");
+	Serial.println("\"");
 	#endif // SERIAL_DEBUG
 
 	if(!pressure.begin())
@@ -310,8 +357,11 @@ void setup() {
 	/// temperatures over the course of several hours. I've gone ahead and moved us away from the "calibrate every startup" method.
 	/// The biases in place now are for my desk, which is neither perfectly flat nor perfectly normal to Earth's gravity.
 	/// We should work to acquire new biases in as best an environment as possible. Doesn't need to be perfect, but it'd be nice to be close.
-	float accel_bias[3] = {ACCEL_BIAS_X, ACCEL_BIAS_Y, ACCEL_BIAS_Z};
-	float gyro_bias[3] = {GYRO_BIAS_X, GYRO_BIAS_Y, GYRO_BIAS_Z};
+	float accel_bias_main[3] = {ACCEL_BIAS_X_MAIN, ACCEL_BIAS_Y_MAIN, ACCEL_BIAS_Z_MAIN};
+	float gyro_bias_main[3] = {GYRO_BIAS_X_MAIN, GYRO_BIAS_Y_MAIN, GYRO_BIAS_Z_MAIN};
+
+	float accel_bias_backup[3] = {ACCEL_BIAS_X_BACKUP, ACCEL_BIAS_Y_BACKUP, ACCEL_BIAS_Z_BACKUP};
+	float gyro_bias_backup[3] = {GYRO_BIAS_X_BACKUP, GYRO_BIAS_Y_BACKUP, GYRO_BIAS_Z_BACKUP};
 //	float accel_bias[3], gyro_bias[3];
 //	imu9250.calibrate_still_bias(accel_bias, gyro_bias);
 
@@ -322,13 +372,13 @@ void setup() {
 	float mag_bias[3] = {470.f, 120.f, 125.f};
 
 	// Acctually setting the biases.
-	imu9250_main.set_bias(accel_bias, gyro_bias, mag_bias);
-	imu9250_backup.set_bias(accel_bias, gyro_bias, mag_bias);
+	imu9250_main.set_bias(accel_bias_main, gyro_bias_main, mag_bias);
+	imu9250_backup.set_bias(accel_bias_backup, gyro_bias_backup, mag_bias);
 
-	if(!imu9250_main.init(AFS_16G, GFS_1000DPS, MFS_16BITS, MMODE_100HZ, false))
+	if(!imu9250_main.init(AFS_16G, GFS_2000DPS, MFS_16BITS, MMODE_100HZ, false))
 		error(ERR_MAIN_MPU9250_INIT_FAIL);
 
-	if(!imu9250_backup.init(AFS_2G, GFS_2000DPS, MFS_16BITS, MMODE_100HZ, true))
+	if(!imu9250_backup.init(AFS_4G, GFS_1000DPS, MFS_16BITS, MMODE_100HZ, true))
 		error(ERR_BACK_MPU9250_INIT_FAIL);
 
 	pinMode(RPI_SIGNAL_PIN, INPUT);
@@ -385,6 +435,9 @@ void loop() {
 	// cycle time impact: ~13ms
 	BaroData bd = getPressure();
 	double a = pressure.altitude(bd.P, baseline);
+
+//	float magnitude_main = sqrt( (data_main.Ax * data_main.Ax) + (data_main.Ay * data_main.Ay) + (data_main.Az * data_main.Az) );
+//	float magnitude_backup = sqrt( (data_main.Ax * data_main.Ax) + (data_main.Ay * data_main.Ay) + (data_main.Az * data_main.Az) );
 /*
 	filter_index++;
 	if(filter_index >= FILTER_SIZE) filter_index = 0;
@@ -437,6 +490,7 @@ void loop() {
 	if(data_main.Ax >= 0) Serial.print(str_space); Serial.print(data_main.Ax, 2); Serial.print(F(" gX   "));
 	if(data_main.Ay >= 0) Serial.print(str_space); Serial.print(data_main.Ay, 2); Serial.print(F(" gY   "));
 	if(data_main.Az >= 0) Serial.print(str_space); Serial.print(data_main.Az, 2); Serial.print(F(" gZ   "));
+	if(magnitude_main >= 0) Serial.print(str_space); Serial.print(magnitude_main, 2); Serial.print(F(" gM   "));
 	if(data_main.Gx >= 0) Serial.print(str_space); Serial.print(data_main.Gx, 1); Serial.print(F(" d/sX   "));
 	if(data_main.Gy >= 0) Serial.print(str_space); Serial.print(data_main.Gy, 1); Serial.print(F(" d/sY   "));
 	if(data_main.Gz >= 0) Serial.print(str_space); Serial.print(data_main.Gz, 1); Serial.print(F(" d/sZ   "));
@@ -444,16 +498,16 @@ void loop() {
 	if(a >= 0) Serial.print(str_space); Serial.print(a, 1); Serial.print(F(" ft   "));
 	Serial.print(now - last_time); Serial.println(" ms");
 
-	if(imu9250_backup.ready()) {
 	Serial.print(F("--- backup ---> "));
 	if(data_backup.Ax >= 0) Serial.print(str_space); Serial.print(data_backup.Ax, 2); Serial.print(F(" gX   "));
 	if(data_backup.Ay >= 0) Serial.print(str_space); Serial.print(data_backup.Ay, 2); Serial.print(F(" gY   "));
 	if(data_backup.Az >= 0) Serial.print(str_space); Serial.print(data_backup.Az, 2); Serial.print(F(" gZ   "));
+	if(magnitude_backup >= 0) Serial.print(str_space); Serial.print(magnitude_backup, 2); Serial.print(F(" gM   "));
 	if(data_backup.Gx >= 0) Serial.print(str_space); Serial.print(data_backup.Gx, 1); Serial.print(F(" d/sX   "));
 	if(data_backup.Gy >= 0) Serial.print(str_space); Serial.print(data_backup.Gy, 1); Serial.print(F(" d/sY   "));
 	if(data_backup.Gz >= 0) Serial.print(str_space); Serial.print(data_backup.Gz, 1); Serial.print(F(" d/sZ   "));
 	if(data_backup.T >= 0) Serial.print(str_space); Serial.print(data_backup.T, 1); Serial.println(F(" C   "));
-	}
+	
 /*	
 	Serial.print(F("--- avg ---> "));
 	if(avg_data.mpu_main.Ax >= 0) Serial.print(str_space); Serial.print(avg_data.mpu_main.Ax, 2); Serial.print(F(" gX   "));
@@ -479,12 +533,13 @@ void loop() {
 	// or some other method of filtering to protect against a single unexpected reading within the deployment range setting
 	// off the experiment. We should also include sanity checks of altitude and time elapsed... We know that 0g won't occur
 	// at 500 ft. off the ground, so we should be checking that we are above some safe minimums.
-	if(now - start_time > 1000) {
-		if(data_main.Az > EXPERIMENT_VERT_G_THRESHOLD) {
+	
+	if(flying) {
+		if((data_main.Az < EXPERIMENT_POS_Z_THRESHOLD && data_backup.Az > 0) || (data_backup.Az < EXPERIMENT_POS_Z_THRESHOLD && data_backup.Az > 0)) {
 			deployExperiment();
 		}
-
-		if(data_main.Az > LIFTOFF_VERT_G_THRESHOLD) {
+	} else {
+		if((data_main.Az > LIFTOFF_POS_Z_THRESHOLD) || (data_backup.Az > LIFTOFF_POS_Z_THRESHOLD)) {
 			liftoff();
 		}
 	}
@@ -565,6 +620,14 @@ void loop() {
 		data_file.print(str_space);*/
 		data_file.println(now - last_time);
 	}
+
+	#ifdef BUZZER_DEBUG
+	if(buzzer_timer > 0) {
+		buzzer_timer -= (now - last_time);
+		if(buzzer_timer <= 0)
+			digitalWrite(BUZZER_PIN, LOW);
+	}
+	#endif
 
 	last_time = now;
 	cycle_count++;
