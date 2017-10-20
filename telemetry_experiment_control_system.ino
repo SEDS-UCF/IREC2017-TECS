@@ -9,7 +9,6 @@
 
 #include <SFE_BMP180.h>
 #include <Wire.h>
-#include <Servo.h>
 #include <SD.h>
 
 #include "MPU9250.h"
@@ -34,24 +33,19 @@ const float GYRO_BIAS_Z_BACKUP = -0.029;
 /*const float LIFTOFF_MAGNITUDE_THRESHOLD = 2.0;
 const float EXPERIMENT_MAGNITUDE_THRESHOLD = 0.1;*/
 
-const float LIFTOFF_POS_Z_THRESHOLD = 2.0;
-const float EXPERIMENT_POS_Z_THRESHOLD = 0.1;
+const float LIFTOFF_POS_Y_THRESHOLD = 2.0;
+const float EXPERIMENT_POS_Y_THRESHOLD = 0.1;
 
 const uint8_t FILTER_SIZE = 0;
 
 const uint8_t FILE_FLUSH_THRESHOLD = 30;
 
-const uint8_t SRV1_PIN = 14;
-const uint8_t SRV2_PIN = 15;
+const uint8_t RELAY_ONE_PIN = 5;
+const uint8_t RELAY_TWO_PIN = 6;
 const uint8_t RPI_SIGNAL_PIN = 7;
 const uint8_t BUZZER_PIN = 9;
 const uint8_t CARD_DETECT_PIN = 8;
 const uint8_t CHIP_SELECT_PIN = 10;
-
-const uint8_t SRV1_START = 0;
-const uint8_t SRV1_STOP = 90;
-const uint8_t SRV2_START = 0;
-const uint8_t SRV2_STOP = 90;
 
 const float M_TO_FT = 3.28084;
 
@@ -113,9 +107,6 @@ FilteredDataset filter_array[FILTER_SIZE];
 uint8_t filter_index = 0;
 
 bool flying = false;
-
-Servo srv1;
-Servo srv2;
 
 void warning(char warn) {
 	switch(warn) {
@@ -229,13 +220,12 @@ void error(char err) {
 }
 
 void deployExperiment() {
-	srv1.write(SRV1_STOP);
-	srv2.write(SRV2_STOP);
-	
+	// pull pins LOW to activate the relays
+	digitalWrite(RELAY_ONE_PIN, LOW);
+	digitalWrite(RELAY_TWO_PIN, LOW);
 	if (data_file) {
 		data_file.print(F("# ")); data_file.print((float)(millis() - start_time) / 1000.f, 3); data_file.println(F(" EXPERIMENT DEPLOYED!")); data_file.flush();
 	}
-	
 	#ifdef SERIAL_DEBUG
 	Serial.println("##### EXPERIMENT DEPLOYED #####");
 	#endif // SERIAL_DEBUG
@@ -248,11 +238,9 @@ void deployExperiment() {
 void liftoff() {
 	flying = true;
 	digitalWrite(RPI_SIGNAL_PIN, HIGH);
-	
 	if (data_file) {
 		data_file.print(F("# ")); data_file.print((float)(millis() - start_time) / 1000.f, 3); data_file.println(F(" LIFTOFF DETECTED!")); data_file.flush();
 	}
-	
 	#ifdef SERIAL_DEBUG
 	Serial.println("##### LIFTOFF DETECTED #####");
 	#endif // SERIAL_DEBUG
@@ -271,18 +259,17 @@ void setup() {
 	#endif // SERIAL_DEBUG
 
 	// setup relay pins
-	pinMode(SRV1_PIN, OUTPUT);
-	pinMode(SRV2_PIN, OUTPUT);
+	pinMode(RELAY_ONE_PIN, OUTPUT);
+	pinMode(RELAY_TWO_PIN, OUTPUT);
+
+	// relays are ACTIVE LOW, so drive them HIGH here to keep them off
+	digitalWrite(RELAY_ONE_PIN, HIGH);
+	digitalWrite(RELAY_TWO_PIN, HIGH);
 
 	pinMode(BUZZER_PIN, OUTPUT);
 
 	pinMode(CHIP_SELECT_PIN, OUTPUT);
 	pinMode(CARD_DETECT_PIN, INPUT_PULLUP);
-
-	srv1.attach(SRV1_PIN); // TODO: replace with constants
-	srv2.attach(SRV2_PIN);
-	srv1.write(SRV1_START);
-	srv2.write(SRV2_START);
 
 	if(!digitalRead(CARD_DETECT_PIN))
 		error(ERR_SD_NO_CARD);
@@ -375,10 +362,10 @@ void setup() {
 	imu9250_main.set_bias(accel_bias_main, gyro_bias_main, mag_bias);
 	imu9250_backup.set_bias(accel_bias_backup, gyro_bias_backup, mag_bias);
 
-	if(!imu9250_main.init(AFS_16G, GFS_2000DPS, MFS_16BITS, MMODE_100HZ, false))
+	if(!imu9250_main.init(AFS_16G, GFS_1000DPS, MFS_16BITS, MMODE_100HZ, false))
 		error(ERR_MAIN_MPU9250_INIT_FAIL);
 
-	if(!imu9250_backup.init(AFS_4G, GFS_1000DPS, MFS_16BITS, MMODE_100HZ, true))
+	if(!imu9250_backup.init(AFS_2G, GFS_2000DPS, MFS_16BITS, MMODE_100HZ, true))
 		error(ERR_BACK_MPU9250_INIT_FAIL);
 
 	pinMode(RPI_SIGNAL_PIN, INPUT);
@@ -535,11 +522,11 @@ void loop() {
 	// at 500 ft. off the ground, so we should be checking that we are above some safe minimums.
 	
 	if(flying) {
-		if((data_main.Az < EXPERIMENT_POS_Z_THRESHOLD && data_backup.Az > 0) || (data_backup.Az < EXPERIMENT_POS_Z_THRESHOLD && data_backup.Az > 0)) {
+		if((data_main.Ay < EXPERIMENT_POS_Y_THRESHOLD) || (data_backup.Ay < EXPERIMENT_POS_Y_THRESHOLD)) {
 			deployExperiment();
 		}
 	} else {
-		if((data_main.Az > LIFTOFF_POS_Z_THRESHOLD) || (data_backup.Az > LIFTOFF_POS_Z_THRESHOLD)) {
+		if((data_main.Ay > LIFTOFF_POS_Y_THRESHOLD) || (data_backup.Ay > LIFTOFF_POS_Y_THRESHOLD)) {
 			liftoff();
 		}
 	}
